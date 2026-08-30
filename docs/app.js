@@ -458,8 +458,28 @@
   }
 
   async function togglePush() {
-    if (!pushSupported()) {
-      showToast("Пуши не поддерживаются этим браузером 😕");
+    // Пуши работают только в защищённом контексте (HTTPS или localhost)
+    if (!window.isSecureContext) {
+      showToast("Сайт открыт по HTTP. Пуши работают только по HTTPS 🔒");
+      return;
+    }
+    if (!("serviceWorker" in navigator)) {
+      showToast("Service Worker не поддерживается этим браузером 😕");
+      return;
+    }
+    if (!("PushManager" in window)) {
+      // На iOS PushManager есть только в PWA с главного экрана (iOS ≥ 16.4)
+      const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+      const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
+      if (isIOS && !isStandalone) {
+        showToast("На iPhone пуши работают только из приложения: Поделиться → «На экран «Домой»», затем открой оттуда 📱");
+      } else {
+        showToast("Этот браузер не поддерживает Web Push 😕 Попробуй Chrome или Firefox");
+      }
+      return;
+    }
+    if (!("Notification" in window)) {
+      showToast("Notification API не поддерживается этим браузером 😕");
       return;
     }
     // iOS: пуши только из PWA, добавленной на главный экран (iOS ≥ 16.4)
