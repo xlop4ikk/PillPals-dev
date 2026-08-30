@@ -8,7 +8,6 @@
 
   // Push-сервер (Cloudflare Worker)
   const API = "https://pillpals-push.xatabeach42.workers.dev";
-  const PUSH_ENABLED_KEY = "pillpals.pushEnabled.v1";
 
   const TAGLINES = [
     "Ты сегодня уже принял свои волшебные пилюли?",
@@ -55,7 +54,6 @@
   const doseInput = $("doseInput");
   const timeInput = $("timeInput");
   const toastEl = $("toast");
-  const hintEl = $("hint");
   const streakNum = $("streakNum");
   const taglineEl = $("tagline");
   const summaryText = $("summaryText");
@@ -64,7 +62,6 @@
   const dateStartInput = $("dateStartInput");
   const dateEndInput = $("dateEndInput");
   const calPrev = $("calPrev");
-  const pushBtn = $("pushBtn");
   const calNext = $("calNext");
 
   let editingId = null;
@@ -177,11 +174,6 @@
     } catch (e) { /* ignore */ }
   }
 
-  /* ---------- Прогресс-кольцо (за сегодня) ---------- */
-  function updateRing() {
-    // Удалено — кольцо убрано из интерфейса
-  }
-
   /* ---------- Сводка выбранного дня ---------- */
   function updateSummary() {
     const pills = loadData();
@@ -281,18 +273,14 @@
     const activePills = pills.filter(p => isPillActiveOnDate(p, selectedDate));
     listEl.innerHTML = "";
     if (pills.length === 0) {
-      hintEl.classList.remove("hidden");
       listEl.innerHTML = '<div class="empty">Пока нет ни одной таблетки.<br>Нажми «＋» внизу, чтобы добавить! 💊</div>';
-      updateRing();
       updateSummary();
       renderCalendar();
       return;
     }
-    hintEl.classList.add("hidden");
     if (activePills.length === 0) {
       // Есть таблетки, но ни одна не активна на эту дату
       listEl.innerHTML = '<div class="empty">📅 На эту дату нет активных препаратов.<br>Добавь новую таблетку или измени период у существующей.</div>';
-      updateRing();
       updateSummary();
       renderCalendar();
       return;
@@ -366,7 +354,6 @@
     });
 
     recomputeStreak();
-    updateRing();
     updateSummary();
     renderCalendar();
   }
@@ -435,127 +422,7 @@
     }, 1000);
   }
 
-  /* ---------- Web Push ---------- */
-  function urlB64ToUint8Array(base64String) {
-    const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-    const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-    const raw = atob(base64);
-    const output = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
-    return output;
-  }
-
-  function pushSupported() {
-    return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
-  }
-
-  function updatePushBtn() {
-    if (!pushBtn) return;
-    const enabled = localStorage.getItem(PUSH_ENABLED_KEY) === "1";
-    pushBtn.textContent = enabled ? "🔔" : "🔕";
-    pushBtn.classList.toggle("on", enabled);
-    pushBtn.title = enabled ? "Уведомления включены" : "Включить уведомления";
-  }
-
-  async function togglePush() {
-    // Пуши работают только в защищённом контексте (HTTPS или localhost)
-    if (!window.isSecureContext) {
-      showToast("Сайт открыт по HTTP. Пуши работают только по HTTPS 🔒");
-      return;
-    }
-    if (!("serviceWorker" in navigator)) {
-      showToast("Service Worker не поддерживается этим браузером 😕");
-      return;
-    }
-    if (!("PushManager" in window)) {
-      // На iOS PushManager есть только в PWA с главного экрана (iOS ≥ 16.4)
-      const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-      const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
-      if (isIOS && !isStandalone) {
-        showToast("На iPhone пуши работают только из приложения: Поделиться → «На экран «Домой»», затем открой оттуда 📱");
-      } else {
-        showToast("Этот браузер не поддерживает Web Push 😕 Попробуй Chrome или Firefox");
-      }
-      return;
-    }
-    if (!("Notification" in window)) {
-      showToast("Notification API не поддерживается этим браузером 😕");
-      return;
-    }
-    // iOS: пуши только из PWA, добавленной на главный экран (iOS ≥ 16.4)
-    const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
-    const isStandalone = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
-    if (isIOS && !isStandalone) {
-      showToast("Добавь Пилюлькина на главный экран (Поделиться → «На экран «Домой»»), чтобы получать пуши 📱");
-      return;
-    }
-
-    const enabled = localStorage.getItem(PUSH_ENABLED_KEY) === "1";
-    if (enabled) await unsubscribePush();
-    else await subscribePush();
-    updatePushBtn();
-  }
-
-  async function subscribePush() {
-    const perm = await Notification.requestPermission();
-    if (perm !== "granted") {
-      showToast("Разрешение на уведомления не выдано 🔕");
-      return;
-    }
-    showToast("⏳ Подключаю уведомления...");
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      // Публичный ключ берём с сервера — единый источник правды
-      const resp = await fetch(API + "/api/vapid-public-key");
-      const vapidPublic = (await resp.text()).trim();
-
-      let sub = await reg.pushManager.getSubscription();
-      if (!sub) {
-        sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlB64ToUint8Array(vapidPublic),
-        });
-      }
-      const save = await fetch(API + "/api/subscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          subscription: sub.toJSON(),
-          pills: loadData(),
-          tzOffsetMin: new Date().getTimezoneOffset(),
-        }),
-      });
-      const data = await save.json();
-      if (data.success) {
-        localStorage.setItem(PUSH_ENABLED_KEY, "1");
-        showToast("🔔 Уведомления включены! Буду напоминать вовремя");
-      } else {
-        showToast("❌ " + (data.error || "Ошибка подписки"));
-      }
-    } catch (e) {
-      showToast("❌ Ошибка: " + e.message);
-    }
-  }
-
-  async function unsubscribePush() {
-    try {
-      const reg = await navigator.serviceWorker.ready;
-      const sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        fetch(API + "/api/unsubscribe", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ endpoint: sub.endpoint }),
-        }).catch(() => {});
-        await sub.unsubscribe();
-      }
-      localStorage.setItem(PUSH_ENABLED_KEY, "0");
-      showToast("🔕 Уведомления выключены");
-    } catch (e) {
-      showToast("❌ Ошибка: " + e.message);
-    }
-  }
-
+  /* ---------- Service Worker ---------- */
   function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("./sw.js").catch((e) => {
@@ -683,11 +550,7 @@
       modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
       document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeModal(); });
 
-      // Web Push
-      if (pushBtn) {
-        pushBtn.addEventListener("click", togglePush);
-        updatePushBtn();
-      }
+      // Service Worker (офлайн-режим + доставка пушей на уже подписанные устройства)
       registerServiceWorker();
 
       buildTypeGrid();
