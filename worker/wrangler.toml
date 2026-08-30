@@ -16,7 +16,7 @@ crons = ["* * * * *"]
 [vars]
 VAPID_SUBJECT = "mailto:xatabeach42@gmail.com"
 # Сайт на GitHub Pages (для абсолютного пути к иконке в уведомлении)
-SITE_URL = "https://xlop4ikk.github.io/PillPals"
+SITE_URL = "https://xlop4ikk.github.io/PillPals-dev"
 # Публичный VAPID-ключ (не секрет)
 VAPID_PUBLIC_KEY = "BGLt0H71qUtSrxBPlacmvhJnIEZNavS_W1OmJeLCtVqzDzQnPX5dKDzxOgdkOPk9KnCMQrc078EHzF2LXaGsqcs"
 # Приватный VAPID-ключ. Для личного проекта ок в vars;
