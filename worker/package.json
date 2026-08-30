@@ -1,0 +1,13 @@
+{
+  "name": "pillpals-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker для отправки пушей",
+  "main": "worker.js",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "devDependencies": {
+    "wrangler": "^4.127.1"
+  }
+}

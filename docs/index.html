@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#3B9AE1" />
+  <meta name="description" content="Пилюлькин День — дружелюбный помощник для напоминаний о приёме лекарств." />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Пилюлькин День" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" type="image/png" href="icons/PillPalls_icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/PillPalls_icon-192.png" />
+  <link rel="stylesheet" href="style.css" />
+  <title>Пилюлькин День 💊</title>
+  <!-- PWA -->
+  <link rel="manifest" href="/PillPals/manifest.json" />  <!-- ← ВСТАВЬ ИМЯ РЕПОЗИТОРИЯ -->
+  <link rel="icon" type="image/png" href="/PillPals/icons/icon-192.png" />
+  <meta name="theme-color" content="#667eea" />
+</head>
+<body>
+  <!-- ===== Декоративные плавающие пузырьки ===== -->
+  <div class="bubbles" aria-hidden="true">
+    <span class="bubble b1">💊</span>
+    <span class="bubble b2">✨</span>
+    <span class="bubble b3">💊</span>
+    <span class="bubble b4">💫</span>
+    <span class="bubble b5">⭐</span>
+  </div>
+
+  <div class="push-section">
+      <button id="subscribeBtn" onclick="subscribeToPush()">🔔 Подписаться</button>
+      <button onclick="unsubscribeFromPush()">❌ Отписаться</button>
+      <button onclick="testPush()">📨 Тестовое уведомление</button>
+  </div>
+
+  <!-- ===== Шапка ===== -->
+  <header class="app-header">
+    <div class="header-row">
+      <div class="brand">
+        <div class="mascot" aria-hidden="true">
+          <img src="icons/PillPalls_icon-192.png" alt="Пилюлькин" class="mascot-img" />
+        </div>
+        <div class="brand-text">
+          <h1>Пилюлькин День</h1>
+          <p class="tagline" id="tagline">Ты сегодня уже принял свои волшебные пилюли?</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <button class="push-btn" id="pushBtn" title="Включить уведомления" aria-label="Уведомления">🔕</button>
+        <div class="streak-badge" title="Дней без пропуска">🔥 <span id="streakNum">0</span></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===== Календарь ===== -->
+  <section class="calendar-wrap">
+    <div class="cal-header">
+      <button class="cal-nav-btn" id="calPrev">‹</button>
+      <span id="calMonth">—</span>
+      <button class="cal-nav-btn" id="calNext">›</button>
+      <button class="cal-today-btn" id="todayBtn">Сегодня</button>
+    </div>
+    <div class="calendar" id="calendar"></div>
+  </section>
+
+  <!-- ===== Сводка выбранного дня ===== -->
+  <section class="day-summary" id="daySummary">
+    <div class="summary-text" id="summaryText">—</div>
+    <div class="summary-bar"><div class="summary-fill" id="summaryFill"></div></div>
+  </section>
+
+  <!-- ===== Подсказка ===== -->
+  <section class="hint" id="hint">
+    👉 Добавь первую таблетку и нажми <b>«＋»</b> внизу.
+  </section>
+
+  <!-- ===== Список таблеток ===== -->
+  <main class="list" id="list"></main>
+
+  <!-- ===== Плавающая кнопка добавить ===== -->
+  <button class="fab" id="addBtn" aria-label="Добавить таблетку">＋</button>
+
+  <!-- ===== Модальное окно ===== -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal-card">
+      <div class="modal-handle"></div>
+      <h2 id="modalTitle">Новое лекарство</h2>
+      <label>Тип лекарства
+        <div class="type-grid" id="typeGrid"></div>
+      </label>
+      <label>Название
+        <input type="text" id="nameInput" placeholder="Напр. Витамин D" maxlength="40" />
+      </label>
+      <label>Дозировка
+        <input type="text" id="doseInput" placeholder="Напр. 1 капсула" maxlength="40" />
+      </label>
+      <label>Время приёма
+        <input type="time" id="timeInput" />
+      </label>
+      <label>Период приёма
+        <div class="date-range">
+          <input type="date" id="dateStartInput" />
+          <span class="date-range-sep">—</span>
+          <input type="date" id="dateEndInput" />
+        </div>
+        <span class="date-range-hint">Оставь пустым для ежедневного приёма</span>
+      </label>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" id="cancelBtn">Отмена</button>
+        <button class="btn btn-primary" id="saveBtn">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Маленький пилюлькин внизу ===== -->
+  <div class="footer-mascot" aria-hidden="true">
+    <img src="icons/PillPalls_icon-192.png" alt="" />
+    <span class="footer-bubble">Береги здоровье! 💙</span>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+
+<script>
+
+// ===== КОНФИГУРАЦИЯ =====
+const API_URL = 'https://pillpals-push.xlop4ikk.workers.dev';  // ← ВСТАВЬ URL СВОЕГО WORKER
+const BASE_PATH = '/PillPals';  // ← ВСТАВЬ ИМЯ РЕПОЗИТОРИЯ
+
+console.log('🌐 API_URL:', API_URL);
+
+// ===== ПОДПИСКА НА УВЕДОМЛЕНИЯ =====
+async function subscribeToPush() {
+    try {
+        // 1. Проверяем поддержку
+        if (!('serviceWorker' in navigator)) {
+            alert('❌ Service Worker не поддерживается');
+            return;
+        }
+        if (!('PushManager' in window)) {
+            alert('❌ Push уведомления не поддерживаются');
+            return;
+        }
+
+        // 2. Запрашиваем разрешение
+        const permission = await Notification.requestPermission();
+        if (permission !== 'granted') {
+            alert('❌ Нужно разрешить уведомления');
+            return;
+        }
+
+        // 3. Регистрируем Service Worker
+        const registration = await navigator.serviceWorker.register(`${BASE_PATH}/sw.js`, {
+            scope: BASE_PATH
+        });
+        console.log('✅ Service Worker зарегистрирован');
+
+        // 4. Получаем VAPID ключ
+        const response = await fetch(`${API_URL}/api/vapid-public-key`);
+        if (!response.ok) throw new Error('Не удалось получить VAPID ключ');
+        const vapidPublicKey = await response.text();
+
+        // 5. Создаём подписку
+        const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: base64urlToUint8Array(vapidPublicKey).buffer
+        });
+
+        // 6. Получаем список таблеток
+        const pills = getPillsList();
+
+        // 7. Отправляем подписку на сервер
+        const saveResponse = await fetch(`${API_URL}/api/subscribe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                subscription: subscription.toJSON(),
+                pills: pills,
+                tzOffsetMin: new Date().getTimezoneOffset()
+            })
+        });
+
+        if (saveResponse.ok) {
+            alert('✅ Подписка оформлена! Теперь вы будете получать уведомления.');
+            updateUI(true);
+        }
+
+    } catch (error) {
+        console.error('❌ Ошибка:', error);
+        alert(`❌ Ошибка: ${error.message}`);
+    }
+}
+
+// ===== ОТПИСКА =====
+async function unsubscribeFromPush() {
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        const subscription = await registration.pushManager.getSubscription();
+        
+        if (subscription) {
+            await subscription.unsubscribe();
+            
+            await fetch(`${API_URL}/api/unsubscribe`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ endpoint: subscription.endpoint })
+            });
+            
+            alert('✅ Вы отписались');
+            updateUI(false);
+        }
+    } catch (error) {
+        console.error('❌ Ошибка:', error);
+    }
+}
+
+// ===== ТЕСТОВОЕ УВЕДОМЛЕНИЕ =====
+async function testPush() {
+    try {
+        const response = await fetch(`${API_URL}/api/test-push`, {
+            method: 'POST'
+        });
+        const result = await response.json();
+        if (result.success) {
+            alert(`✅ Отправлено ${result.sent || 0} уведомлений`);
+        } else {
+            alert(`❌ Ошибка: ${result.error}`);
+        }
+    } catch (error) {
+        alert(`❌ Ошибка: ${error.message}`);
+    }
+}
+
+// ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
+function base64urlToUint8Array(base64url) {
+    const padded = base64url + '='.repeat((4 - (base64url.length % 4)) % 4);
+    const binary = atob(padded.replace(/-/g, '+').replace(/_/g, '/'));
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function getPillsList() {
+    // 🔄 ЭТУ ФУНКЦИЮ НУЖНО АДАПТИРОВАТЬ ПОД ТВОЁ ПРИЛОЖЕНИЕ
+    // Например, если ты хранишь таблетки в localStorage:
+    try {
+        return JSON.parse(localStorage.getItem('pills') || '[]');
+    } catch {
+        return [];
+    }
+}
+
+function updateUI(isSubscribed) {
+    const btn = document.getElementById('subscribeBtn');
+    if (btn) {
+        btn.textContent = isSubscribed ? '✅ Подписан' : '🔔 Подписаться';
+        btn.disabled = isSubscribed;
+    }
+}
+
+// ===== АВТОМАТИЧЕСКАЯ ПРОВЕРКА ПРИ ЗАГРУЗКЕ =====
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register(`${BASE_PATH}/sw.js`, {
+        scope: BASE_PATH
+    })
+    .then(reg => {
+        console.log('✅ SW зарегистрирован');
+        return reg.pushManager.getSubscription();
+    })
+    .then(sub => {
+        if (sub) {
+            updateUI(true);
+            console.log('✅ Пользователь уже подписан');
+        }
+    })
+    .catch(err => console.error('❌ SW ошибка:', err));
+}
+
+</script>
+
+</html>
