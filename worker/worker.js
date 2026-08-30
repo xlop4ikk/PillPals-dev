@@ -265,6 +265,26 @@ async function handleRequest(request, env) {
     return json({ success: true, saved: sched.pills.length });
   }
 
+  // ВРЕМЕННЫЙ тестовый push (для отладки, будет удалён)
+  if (url.pathname === "/api/test-push" && method === "POST") {
+    const subs = await getSubscriptions(env);
+    if (subs.length === 0) return json({ success: false, error: "Нет подписок" });
+    const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
+    let sent = 0;
+    const errors = [];
+    for (const rec of subs) {
+      const result = await sendPush(rec.subscription, env, {
+        title: "💊 Тест Пилюлькина",
+        body: "Проверка доставки " + new Date().toISOString().slice(11, 19),
+        icon: siteUrl + "/icons/PillPalls_icon-192.png",
+        url: siteUrl || "/",
+      });
+      if (result.ok) sent++;
+      else errors.push(result);
+    }
+    return json({ success: sent > 0, sent, errors });
+  }
+
   // Debug
   if (url.pathname === "/api/debug" && method === "GET") {
     const subs = await getSubscriptions(env);
@@ -324,11 +344,12 @@ async function checkReminders(env) {
 
     if (due.length === 0) return;
 
+    const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
     const payload = {
       title: "💊 Время принять таблетки!",
       body: "Пора принять:\n" + due.map(n => "💊 " + n).join("\n"),
-      icon: (env.SITE_URL || "") + "/icons/PillPalls_icon-192.png",
-      url: env.SITE_URL || "/",
+      icon: siteUrl + "/icons/PillPalls_icon-192.png",
+      url: siteUrl || "/",
     };
 
     let sent = 0;
