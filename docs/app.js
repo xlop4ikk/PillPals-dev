@@ -64,6 +64,7 @@
   const dateEndInput = $("dateEndInput");
   const calPrev = $("calPrev");
   const pushBtn = $("pushBtn");
+  const testPushBtn = $("testPushBtn");
   const calNext = $("calNext");
 
   let editingId = null;
@@ -549,6 +550,28 @@
     }
   }
 
+  /* ---------- Тестовый push (кнопка 🧪) ---------- */
+  async function testPush() {
+    if (!window.isSecureContext) {
+      showToast("Пуши работают только по HTTPS 🔒");
+      return;
+    }
+    showToast("⏳ Отправляю тестовое уведомление...");
+    try {
+      const resp = await fetch(API + "/api/test-push", { method: "POST" });
+      const data = await resp.json();
+      if (data.success && data.sent > 0) {
+        showToast("✅ Отправлено! Уведомление должно прийти на телефон");
+      } else if (data.error === "Нет подписок" || (data.errors && data.errors.length && !data.sent)) {
+        showToast("❌ Нет активной подписки. Нажми 🔕 и включи уведомления");
+      } else {
+        showToast("❌ Ошибка отправки: " + JSON.stringify(data.errors || data.error || data));
+      }
+    } catch (e) {
+      showToast("❌ Ошибка: " + e.message);
+    }
+  }
+
   /* ---------- Service Worker ---------- */
   function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
@@ -682,6 +705,7 @@
         pushBtn.addEventListener("click", togglePush);
         updatePushBtn();
       }
+      if (testPushBtn) testPushBtn.addEventListener("click", testPush);
       registerServiceWorker();
 
       buildTypeGrid();

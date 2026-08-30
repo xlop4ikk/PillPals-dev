@@ -9,6 +9,7 @@
  *   POST /api/subscribe        — { subscription, pills?, tzOffsetMin? } — сохранить подписку
  *   POST /api/unsubscribe      — { endpoint } — удалить подписку
  *   POST /api/pills/save       — { pills, tzOffsetMin } — сохранить расписание
+ *   POST /api/test-push        — тестовое уведомление всем подписанным
  *   GET  /api/debug            — состояние
  *
  * Cron: каждую минуту проверяет расписание и рассылает push.
@@ -265,7 +266,7 @@ async function handleRequest(request, env) {
     return json({ success: true, saved: sched.pills.length });
   }
 
-  // ВРЕМЕННЫЙ тестовый push (для отладки, будет удалён)
+  // Тестовый push всем подписанным (кнопка 🧪 в приложении)
   if (url.pathname === "/api/test-push" && method === "POST") {
     const subs = await getSubscriptions(env);
     if (subs.length === 0) return json({ success: false, error: "Нет подписок" });

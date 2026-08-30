@@ -1,5 +1,5 @@
 /* ===== Пилюлькин День — Service Worker ===== */
-const CACHE = "pillpals-v30";
+const CACHE = "pillpals-v31";
 const ASSETS = [
   "./",
   "./index.html",
