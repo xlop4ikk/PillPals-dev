@@ -7,7 +7,7 @@
   const LAST_TAKEN_ALL_KEY = "pillpals.lastAllTaken.v1";
 
   // Push-сервер (Cloudflare Worker)
-  const API = "https://pillpals-push.xatabeach42.workers.dev";
+  const API = "https://pillpals-push-v2.xatabeach42.workers.dev";
   const PUSH_ENABLED_KEY = "pillpals.pushEnabled.v1";
 
   const TAGLINES = [

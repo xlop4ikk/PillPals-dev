@@ -3,10 +3,9 @@
  * Запуск:  node tools/gen_vapid.js
  *
  * Выводит:
- *   VAPID_PUBLIC_KEY  — для клиента (applicationServerKey)
- *   VAPID_PRIVATE_JWK — для Worker (подпись JWT)
- *
- * Скопируй значения в worker/wrangler.toml (или задай как secrets).
+ *   VAPID_PUBLIC_KEY  — публичный ключ (applicationServerKey на клиенте)
+ *   VAPID_PRIVATE_KEY — приватный ключ в формате `d` (base64url, 43 символа) —
+ *                       именно его ожидает worker.js в wrangler.toml
  */
 const crypto = require("crypto");
 
@@ -19,12 +18,13 @@ const spkiDer = publicKey.export({ type: "spki", format: "der" });
 const point = spkiDer.slice(-65); // последние 65 байт — точка
 const vapidPublicKey = point.toString("base64url");
 
-// Приватный ключ как JWK (удобно для Web Crypto в Worker)
+// Приватный ключ — только поле `d` из JWK (raw scalar в base64url)
 const privJwk = privateKey.export({ format: "jwk" });
+const vapidPrivateKey = privJwk.d;
 
-console.log("=== VAPID ключи сгенерированы ===\n");
-console.log("VAPID_PUBLIC_KEY (для app.js / клиента):");
+console.log("=== VAPID keys generated ===\n");
+console.log("VAPID_PUBLIC_KEY  (worker/wrangler.toml -> [vars]):");
 console.log(vapidPublicKey);
-console.log("\nVAPID_PRIVATE_JWK (для Worker — вставь в wrangler.toml одной строкой):");
-console.log(JSON.stringify(privJwk));
-console.log("\nГотово. Не коммить приватный ключ в публичный репозиторий!");
+console.log("\nVAPID_PRIVATE_KEY (worker/wrangler.toml -> [vars]):");
+console.log(vapidPrivateKey);
+console.log("\nDone. Do not commit the private key to a public repo!");
