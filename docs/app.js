@@ -481,6 +481,10 @@
     updatePushBtn();
   }
 
+  function isValidVapidKey(key) {
+    return typeof key === "string" && /^[A-Za-z0-9_-]{87}$/.test(key);
+  }
+
   async function subscribePush() {
     const perm = await Notification.requestPermission();
     if (perm !== "granted") {
@@ -493,6 +497,10 @@
       // Публичный ключ берём с сервера — единый источник правды
       const resp = await fetch(API + "/api/vapid-public-key");
       const vapidPublic = (await resp.text()).trim();
+      if (!isValidVapidKey(vapidPublic)) {
+        showToast("❌ Push-сервер вернул неверный ключ. Обнови воркер: cd worker → wrangler deploy");
+        return;
+      }
 
       let sub = await reg.pushManager.getSubscription();
       if (!sub) {
