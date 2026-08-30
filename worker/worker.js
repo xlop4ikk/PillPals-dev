@@ -139,7 +139,8 @@ async function encryptPayload(payloadStr, sub) {
   const nonce = await hkdf(ikm, ephPublicRaw, utf8("Content-Encoding: nonce\u0000"), 12);
 
   // Запись: payload || 0x02 || нулевой паддинг (всего rs - 17)
-  const rs = 4096;
+  // rs=4026: 70 байт заголовка aes128gcm + 4026 = 4096 — лимит Apple Push (413 иначе)
+  const rs = 4026;
   const payloadBytes = utf8(payloadStr);
   const paddingLen = rs - 17 - payloadBytes.length;
   if (paddingLen < 0) throw new Error("payload too large");
@@ -336,6 +337,7 @@ async function checkReminders(env) {
       const result = await sendPush(rec.subscription, env, payload);
       if (result.ok) sent++;
       else if (result.status === 404 || result.status === 410) removed.push(rec.subscription.endpoint);
+      else console.log("Push failed:", JSON.stringify(result), "endpoint:", rec.subscription.endpoint.slice(0, 60));
     }
     console.log(`Push: due=${due.length} sent=${sent} removed=${removed.length}`);
 
