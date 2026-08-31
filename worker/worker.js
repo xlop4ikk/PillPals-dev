@@ -271,15 +271,19 @@ async function handleRequest(request, env) {
     const subs = await getSubscriptions(env);
     if (subs.length === 0) return json({ success: false, error: "Нет подписок" });
     const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
+    const minimal = url.searchParams.get("minimal") === "1";
     let sent = 0;
     const errors = [];
     for (const rec of subs) {
-      const result = await sendPush(rec.subscription, env, {
-        title: "💊 Тест Пилюлькина",
-        body: "Проверка доставки " + new Date().toISOString().slice(11, 19),
-        icon: siteUrl + "/icons/PillPalls_icon-192.png",
-        url: siteUrl || "/",
-      });
+      const payload = minimal
+        ? { title: "💊 Минимальный тест", body: "Голый payload без иконки и полей" }
+        : {
+            title: "💊 Тест Пилюлькина",
+            body: "Полный payload с иконкой " + new Date().toISOString().slice(11, 19),
+            icon: siteUrl + "/icons/PillPalls_icon-192.png",
+            url: siteUrl || "/",
+          };
+      const result = await sendPush(rec.subscription, env, payload);
       if (result.ok) sent++;
       else errors.push(result);
     }
