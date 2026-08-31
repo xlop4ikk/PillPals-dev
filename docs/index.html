@@ -82,15 +82,15 @@
         <input type="text" id="doseInput" placeholder="Напр. 1 капсула" maxlength="40" />
       </label>
       <label>Время приёма
-        <input type="time" id="timeInput" />
+        <input type="time" id="timeInput" required pattern="[0-9]{2}:[0-9]{2}" />
       </label>
-      <label>Период приёма
+      <label>Период приёма (для курсовых приёмов)
         <div class="date-range">
           <input type="date" id="dateStartInput" />
           <span class="date-range-sep">—</span>
           <input type="date" id="dateEndInput" />
         </div>
-        <span class="date-range-hint">Оставь пустым для ежедневного приёма</span>
+        <span class="date-range-hint">Заполните оба поля для периодического приёма, или оставьте оба пустыми для ежедневного</span>
       </label>
       <div class="modal-actions">
         <button class="btn btn-ghost" id="cancelBtn">Отмена</button>

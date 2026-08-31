@@ -415,6 +415,25 @@ async function saveSchedule(env, rec) {
   await env.KV_NAMESPACE.put("user:pills", JSON.stringify(rec));
 }
 
+// ===== KV: schedule per userId =====
+async function getScheduleByUserId(env, userId) {
+  const rec = await env.KV_NAMESPACE.get("user:" + userId, "json");
+  return rec || { pills: [], tzOffsetMin: 0, notifiedToday: {} };
+}
+
+async function saveScheduleByUserId(env, userId, rec) {
+  await env.KV_NAMESPACE.put("user:" + userId, JSON.stringify(rec));
+}
+
+// ===== KV: endpoint → userId mapping =====
+async function saveEndpointToUserId(env, endpoint, userId) {
+  await env.KV_NAMESPACE.put("ep:" + endpoint, userId);
+}
+
+async function getUserIdByEndpoint(env, endpoint) {
+  return await env.KV_NAMESPACE.get("ep:" + endpoint);
+}
+
 // ===== HTTP =====
 async function handleRequest(request, env) {
   const url = new URL(request.url);
@@ -437,11 +456,20 @@ async function handleRequest(request, env) {
       return json({ success: false, error: "missing subscription" }, 400);
     }
 
+    const endpoint = data.subscription.endpoint;
+    const userId = data.userId || null;
+
+    // Сохраняем mapping endpoint → userId
+    if (userId) {
+      await saveEndpointToUserId(env, endpoint, userId);
+    }
+
     const subs = await getSubscriptions(env);
     const rec = {
       subscription: data.subscription,
       tzOffsetMin: Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0,
       addedAt: Date.now(),
+      userId: userId,
     };
     const idx = subs.findIndex((s) => s.subscription?.endpoint === data.subscription.endpoint);
     if (idx !== -1) subs[idx] = rec;
@@ -468,10 +496,11 @@ async function handleRequest(request, env) {
 
   if (url.pathname === "/api/pills/save" && method === "POST") {
     const data = await request.json();
-    const sched = await getSchedule(env);
+    if (!data?.userId) return json({ success: false, error: "missing userId" }, 400);
+    const sched = await getScheduleByUserId(env, data.userId);
     sched.pills = Array.isArray(data.pills) ? data.pills : [];
     sched.tzOffsetMin = Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0;
-    await saveSchedule(env, sched);
+    await saveScheduleByUserId(env, data.userId, sched);
     return json({ success: true, saved: sched.pills.length });
   }
 
@@ -499,7 +528,7 @@ async function handleRequest(request, env) {
   return json({ error: "not found" }, 404);
 }
 
-// ===== Cron =====
+// ===== Cron: напоминания для каждого пользователя отдельно =====
 async function checkReminders(env) {
   try {
     if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
@@ -510,88 +539,97 @@ async function checkReminders(env) {
     const subs = await getSubscriptions(env);
     if (subs.length === 0) return;
 
-    const sched = await getSchedule(env);
-    const pills = sched.pills || [];
-    if (pills.length === 0) return;
-
-    const offset = Number.isFinite(sched.tzOffsetMin) ? sched.tzOffsetMin : 0;
-    const userNow = new Date(Date.now() - offset * 60000);
-    const todayKey =
-      userNow.getFullYear() +
-      "-" +
-      String(userNow.getMonth() + 1).padStart(2, "0") +
-      "-" +
-      String(userNow.getDate()).padStart(2, "0");
-    const userHHMM =
-      String(userNow.getHours()).padStart(2, "0") +
-      ":" +
-      String(userNow.getMinutes()).padStart(2, "0");
-
-    sched.notifiedToday = sched.notifiedToday || {};
-
-    const due = [];
-    const dueKeys = [];
-    for (const pill of pills) {
-      if (!pill.time) continue;
-      if (pill.dateStart && todayKey < pill.dateStart) continue;
-      if (pill.dateEnd && todayKey > pill.dateEnd) continue;
-      if (pill.takenDates?.[todayKey]) continue;
-      if (pill.time > userHHMM) continue;
-
-      const key = `${pill.id}:${todayKey}`;
-      if (sched.notifiedToday[key]) continue;
-      due.push((pill.name || "Лекарство") + (pill.dose ? ` (${pill.dose})` : ""));
-      dueKeys.push(key);
-    }
-
-    if (due.length === 0) return;
-
     const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
-    const payload = {
-      title: "💊 Время принять таблетки!",
-      body: "Пора принять:\n" + due.map((name) => "💊 " + name).join("\n"),
-      icon: siteUrl + "/icons/PillPalls_icon-192.png",
-      url: siteUrl || "/",
-    };
-
-    let accepted = 0;
-    const invalidEndpoints = new Set();
+    const now = Date.now();
+    const totalStats = { total: subs.length, usersChecked: 0, totalDue: 0, totalAccepted: 0, totalRemoved: 0 };
 
     for (const rec of subs) {
+      // Определяем userId: из записи подписки или по mapping
+      const userId = rec.userId || (await getUserIdByEndpoint(env, rec.subscription?.endpoint));
+      if (!userId) continue;
+
+      const sched = await getScheduleByUserId(env, userId);
+      const pills = sched.pills || [];
+      if (pills.length === 0) continue;
+
+      const offset = Number.isFinite(sched.tzOffsetMin) ? sched.tzOffsetMin : 0;
+      const userNow = new Date(now - offset * 60000);
+      const todayKey =
+        userNow.getFullYear() +
+        "-" +
+        String(userNow.getMonth() + 1).padStart(2, "0") +
+        "-" +
+        String(userNow.getDate()).padStart(2, "0");
+      const userHHMM =
+        String(userNow.getHours()).padStart(2, "0") +
+        ":" +
+        String(userNow.getMinutes()).padStart(2, "0");
+
+      sched.notifiedToday = sched.notifiedToday || {};
+
+      const due = [];
+      const dueKeys = [];
+      for (const pill of pills) {
+        if (!pill.time) continue;
+        if (pill.dateStart && todayKey < pill.dateStart) continue;
+        if (pill.dateEnd && todayKey > pill.dateEnd) continue;
+        if (pill.takenDates?.[todayKey]) continue;
+        if (pill.time > userHHMM) continue;
+
+        const key = `${pill.id}:${todayKey}`;
+        if (sched.notifiedToday[key]) continue;
+        due.push((pill.name || "Лекарство") + (pill.dose ? ` (${pill.dose})` : ""));
+        dueKeys.push(key);
+      }
+
+      if (due.length === 0) continue;
+
+      const payload = {
+        title: "💊 Время принять таблетки!",
+        body: "Пора принять:\n" + due.map((name) => "💊 " + name).join("\n"),
+        icon: siteUrl + "/icons/PillPalls_icon-192.png",
+        url: siteUrl || "/",
+      };
+
+      let accepted = 0;
+      const invalidEndpoints = new Set();
+
       const result = await sendPush(rec.subscription, env, payload);
       if (result.ok) accepted++;
       else if (result.status === 404 || result.status === 410) {
         invalidEndpoints.add(rec.subscription.endpoint);
       } else {
         console.log(
-          "Push failed:",
+          `Push failed for user ${userId}:`,
           JSON.stringify(result),
           "endpoint:",
           String(rec.subscription.endpoint || "").slice(0, 80)
         );
       }
+
+      totalStats.totalDue += due.length;
+      totalStats.totalAccepted += accepted;
+
+      if (invalidEndpoints.size) {
+        console.log(`Removing invalid endpoint for user ${userId}`);
+      }
+
+      // Помечаем уведомлёнными только если push принят
+      if (accepted > 0) {
+        for (const key of dueKeys) sched.notifiedToday[key] = Date.now();
+      }
+
+      // Чистим старые флаги (оставляем только сегодня)
+      const cleaned = {};
+      for (const key in sched.notifiedToday) {
+        if (key.endsWith(":" + todayKey)) cleaned[key] = sched.notifiedToday[key];
+      }
+      sched.notifiedToday = cleaned;
+      await saveScheduleByUserId(env, userId, sched);
+      totalStats.usersChecked++;
     }
 
-    console.log(`Push: due=${due.length} accepted=${accepted} removed=${invalidEndpoints.size}`);
-
-    if (invalidEndpoints.size) {
-      await saveSubscriptions(
-        env,
-        subs.filter((s) => !invalidEndpoints.has(s.subscription?.endpoint))
-      );
-    }
-
-    // Mark as notified only when at least one push service accepted the message.
-    if (accepted > 0) {
-      for (const key of dueKeys) sched.notifiedToday[key] = Date.now();
-    }
-
-    const cleaned = {};
-    for (const key in sched.notifiedToday) {
-      if (key.endsWith(`:${todayKey}`)) cleaned[key] = sched.notifiedToday[key];
-    }
-    sched.notifiedToday = cleaned;
-    await saveSchedule(env, sched);
+    console.log(`Cron: users=${totalStats.usersChecked} due=${totalStats.totalDue} accepted=${totalStats.totalAccepted}`);
   } catch (e) {
     console.error("Cron error:", e);
   }

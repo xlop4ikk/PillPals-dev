@@ -5,10 +5,22 @@
   const STORAGE_KEY = "pillpals.pills.v1";
   const STREAK_KEY = "pillpals.streak.v1";
   const LAST_TAKEN_ALL_KEY = "pillpals.lastAllTaken.v1";
+  const USER_ID_KEY = "pillpals.userId.v1";
 
   // Push-сервер (Cloudflare Worker)
   const API = "https://pillpals-push-v2.xatabeach42.workers.dev";
   const PUSH_ENABLED_KEY = "pillpals.pushEnabled.v1";
+
+  // Уникальный ID пользователя
+  function getOrCreateUserId() {
+    let uid = localStorage.getItem(USER_ID_KEY);
+    if (!uid) {
+      uid = "user_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      localStorage.setItem(USER_ID_KEY, uid);
+    }
+    return uid;
+  }
+  const userId = getOrCreateUserId();
 
   const TAGLINES = [
     "Ты сегодня уже принял свои волшебные пилюли?",
@@ -416,6 +428,7 @@
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            userId,
             pills: loadData(),
             tzOffsetMin: new Date().getTimezoneOffset(),
           }),
@@ -518,6 +531,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          userId,
           subscription: sub.toJSON(),
           pills: loadData(),
           tzOffsetMin: new Date().getTimezoneOffset(),
@@ -619,6 +633,9 @@
     const dateEnd = dateEndInput.value || null;
     if (!name) { showToast("Введи название лекарства 🙏"); nameInput.focus(); return; }
     if (!time) { showToast("Выбери время ⏰"); return; }
+    // Если заполнено одно поле даты — обязательно второе
+    if (dateStart && !dateEnd) { showToast("Укажи дату окончания курса 📅"); return; }
+    if (!dateStart && dateEnd) { showToast("Укажи дату начала курса 📅"); return; }
     if (dateStart && dateEnd && dateStart > dateEnd) {
       showToast("Начало периода позже конца 📅"); return;
     }
