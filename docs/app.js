@@ -64,7 +64,6 @@
   const dateEndInput = $("dateEndInput");
   const calPrev = $("calPrev");
   const pushBtn = $("pushBtn");
-  const testPushBtn = $("testPushBtn");
   const calNext = $("calNext");
 
   let editingId = null;
@@ -555,28 +554,6 @@
     }
   }
 
-  /* ---------- Тестовый push (кнопка 🧪) ---------- */
-  async function testPush() {
-    if (!window.isSecureContext) {
-      showToast("Пуши работают только по HTTPS 🔒");
-      return;
-    }
-    showToast("⏳ Отправляю тестовое уведомление...");
-    try {
-      const resp = await fetch(API + "/api/test-push", { method: "POST" });
-      const data = await resp.json();
-      if (data.success && data.accepted > 0) {
-        showToast("✅ Push принят сервером Apple. Если уведомления разрешены, оно должно появиться на устройстве.");
-      } else if (data.error === "Нет подписок") {
-        showToast("❌ Нет активной подписки. Нажми 🔕 и включи уведомления");
-      } else {
-        showToast("❌ Ошибка отправки: " + JSON.stringify(data.results || data.error || data));
-      }
-    } catch (e) {
-      showToast("❌ Ошибка: " + e.message);
-    }
-  }
-
   /* ---------- Service Worker ---------- */
   function registerServiceWorker() {
     if (!("serviceWorker" in navigator)) return;
@@ -710,7 +687,6 @@
         pushBtn.addEventListener("click", togglePush);
         updatePushBtn();
       }
-      if (testPushBtn) testPushBtn.addEventListener("click", testPush);
       registerServiceWorker();
 
       buildTypeGrid();

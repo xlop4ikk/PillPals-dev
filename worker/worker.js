@@ -12,7 +12,6 @@
  *   POST /api/subscribe
  *   POST /api/unsubscribe
  *   POST /api/pills/save
- *   POST /api/test-push
  *   GET  /api/debug
  *
  * Cron: каждую минуту проверяет расписание и отправляет push.
@@ -474,64 +473,6 @@ async function handleRequest(request, env) {
     sched.tzOffsetMin = Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0;
     await saveSchedule(env, sched);
     return json({ success: true, saved: sched.pills.length });
-  }
-
-  if (url.pathname === "/api/test-push" && method === "POST") {
-    const subs = await getSubscriptions(env);
-    if (subs.length === 0) return json({ success: false, error: "Нет подписок" });
-
-    const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
-    const minimal = url.searchParams.get("minimal") === "1";
-    let accepted = 0;
-    const results = [];
-
-    for (const rec of subs) {
-      const payload = minimal
-        ? {
-            title: "💊 Минимальный тест",
-            body: "Проверка Web Push без дополнительных полей",
-          }
-        : {
-            title: "💊 Тест Пилюлькина",
-            body: "Apple Push Service принял это сообщение — уведомление должно появиться на устройстве",
-            icon: siteUrl + "/icons/PillPalls_icon-192.png",
-            url: siteUrl || "/",
-          };
-
-      const result = await sendPush(rec.subscription, env, payload);
-      results.push({
-        endpoint: String(rec.subscription?.endpoint || "").slice(0, 80),
-        status: result.status,
-        ok: result.ok,
-        error: result.error,
-        responseBody: result.responseBody,
-      });
-      if (result.ok) accepted++;
-    }
-
-    // HTTP 404/410 means the subscription is no longer valid.
-    const invalidEndpoints = results
-      .filter((r) => r.status === 404 || r.status === 410)
-      .map((r) => r.endpoint);
-
-    if (invalidEndpoints.length) {
-      const invalidFull = new Set(
-        subs
-          .filter((s) => invalidEndpoints.includes(String(s.subscription?.endpoint || "").slice(0, 80)))
-          .map((s) => s.subscription.endpoint)
-      );
-      await saveSubscriptions(
-        env,
-        subs.filter((s) => !invalidFull.has(s.subscription?.endpoint))
-      );
-    }
-
-    return json({
-      success: accepted > 0,
-      accepted,
-      total: subs.length,
-      results,
-    });
   }
 
   if (url.pathname === "/api/debug" && method === "GET") {
