@@ -1,5 +1,5 @@
 /* ===== Пилюлькин День — Service Worker ===== */
-const CACHE = "pillpals-v31";
+const CACHE = "pillpals-v32";
 const ASSETS = [
   "./",
   "./index.html",
@@ -60,15 +60,40 @@ self.addEventListener("push", (event) => {
     }
   } catch (e) { /* некорректный payload — показываем дефолт */ }
 
-  event.waitUntil(self.registration.showNotification(data.title, {
-    body: data.body,
-    icon: data.icon || "./icons/PillPalls_icon-192.png",
-    badge: "./icons/PillPalls_icon-192.png",
-    tag: "pillpals-reminder",
-    renotify: true,
-    vibrate: [200, 100, 200],
-    data: { url: data.url || "./" },
-  }));
+  // Уникальный tag на каждый push: Safari не заменяет по тегу, а Chrome
+  // с одинаковым тегом молча подменяет уведомление без звука —
+  // из-за этого кажется, что уведомления «не приходят».
+  const tag = "pillpals-" + Date.now();
+
+  event.waitUntil((async () => {
+    // Сначала показываем уведомление (высший приоритет), только потом всё остальное.
+    // Полный набор опций может не поддерживаться — тогда пробуем минимальный.
+    const fullOptions = {
+      body: data.body,
+      icon: data.icon || "./icons/PillPalls_icon-192.png",
+      badge: "./icons/PillPalls_icon-192.png",
+      tag,
+      renotify: true,
+      vibrate: [200, 100, 200],
+      data: { url: data.url || "./" },
+    };
+    try {
+      await self.registration.showNotification(data.title, fullOptions);
+    } catch (e1) {
+      // Fallback: только базовые опции, которые поддерживает даже Safari
+      try {
+        await self.registration.showNotification(data.title, {
+          body: data.body,
+          tag,
+          data: { url: data.url || "./" },
+        });
+      } catch (e2) {
+        // Последний шанс: вообще без опций
+        try { await self.registration.showNotification(data.title, { body: data.body }); }
+        catch (e3) { /* совсем никак */ }
+      }
+    }
+  })());
 });
 
 // Клик по уведомлению — открываем приложение
