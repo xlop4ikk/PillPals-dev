@@ -2,22 +2,21 @@ name = "pillpals-push-v2"
 main = "worker.js"
 compatibility_date = "2024-09-01"
 
-# KV-хранилище для подписок и расписания
-# Создан: wrangler kv namespace create PILLS
 [[kv_namespaces]]
 binding = "KV_NAMESPACE"
 id = "7d17b2595c3948aba669286743498941"
 
-# Cron: каждую минуту
 [triggers]
 crons = ["* * * * *"]
 
 [vars]
 VAPID_SUBJECT = "mailto:xatabeach42@gmail.com"
-# Сайт на GitHub Pages (для абсолютного пути к иконке в уведомлении)
 SITE_URL = "https://xlop4ikk.github.io/PillPals-dev/"
-# Публичный VAPID-ключ (не секрет). Сгенерирован: node tools/gen_vapid.js
+# Public VAPID key. This is safe to expose to the browser.
 VAPID_PUBLIC_KEY = "BIrwu0FfzyM3JciixxmUGZTh5-OlaX7YQb-q4yfBaLk6cwyKGIhdMsef9KvMBsfUMq9y0p85mJgsvah58nybERo"
-# Приватный VAPID-ключ (формат `d`, base64url).
-# Для личного проекта ок в vars; безопаснее: npx wrangler secret put VAPID_PRIVATE_KEY
-VAPID_PRIVATE_KEY = "_XMyH9X8UnkIJSGCA0RkAfmztn8QZUU0qPSX8IHVFuo"
+
+# IMPORTANT:
+# VAPID_PRIVATE_KEY is intentionally NOT stored here.
+# Configure it once with:
+#   cd worker
+#   wrangler secret put VAPID_PRIVATE_KEY

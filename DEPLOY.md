@@ -60,7 +60,7 @@ VAPID_PRIVATE_JWK (для Worker):      {"kty":"EC",...}
 
 ## Шаг 5. Настрой и задеплой Worker
 
-1. Установи Wrangler (CLI Cloudflare):
+1. Установи Wrangler:
    ```bash
    npm install -g wrangler
    ```
@@ -68,50 +68,61 @@ VAPID_PRIVATE_JWK (для Worker):      {"kty":"EC",...}
    ```bash
    wrangler login
    ```
-   (Откроется браузер — войди в аккаунт Cloudflare.)
-
-3. Открой `worker/wrangler.toml` и заполни:
-   - `VAPID_PUBLIC_KEY` — твой публичный ключ
-   - `VAPID_PRIVATE_JWK` — твой приватный ключ (одной строкой в кавычках)
-   - `VAPID_SUBJECT` — твой email (`mailto:ты@example.com`)
-   - В блоке `[[kv_namespaces]]` замени `id` на **Namespace ID** из шага 4.
-
-4. Задеплой:
+3. Проверь `worker/wrangler.toml`:
+   - `VAPID_PUBLIC_KEY` — публичный VAPID-ключ;
+   - `VAPID_SUBJECT` — твой email в формате `mailto:ты@example.com`;
+   - `SITE_URL` — адрес GitHub Pages;
+   - `[[kv_namespaces]] id` — ID твоего KV namespace.
+4. Запиши приватный VAPID-ключ как Cloudflare Secret. Его **не нужно** добавлять в `wrangler.toml`:
    ```bash
    cd worker
+   wrangler secret put VAPID_PRIVATE_KEY
+   ```
+   Вставь значение приватного VAPID-ключа по запросу Wrangler.
+5. Задеплой Worker:
+   ```bash
    wrangler deploy
    ```
-   Wrangler выдаст URL вида: `https://pillpals-push.ТВОЙ-СУБДОМЕН.workers.dev`
+   Wrangler выдаст адрес вида `https://pillpals-push-v2.<ТВОЙ-SUBDOMAIN>.workers.dev`.
 
----
+## Шаг 6. Проверь URL Worker в приложении
 
-## Шаг 6. Впиши URL Worker в приложение
-
-Открой `app.js`, найди вверху:
+Открой `docs/app.js`. В начале файла должна быть строка вида:
 ```js
-const PUSH_SERVER = "https://pillpals-push.YOUR-SUBDOMAIN.workers.dev";
-const VAPID_PUBLIC_KEY = "BD99Ubpc...";
+const API = "https://pillpals-push-v2.<ТВОЙ-SUBDOMAIN>.workers.dev";
 ```
-Замени на свой URL и свой публичный ключ. Залей обновление на GitHub Pages.
+Замени её на фактический URL своего Worker, если он отличается. Публичный VAPID-ключ вручную в `app.js` прописывать не нужно: приложение получает его через `/api/vapid-public-key`.
 
----
+После этого загрузи содержимое папки `docs/` в GitHub Pages.
 
-## Шаг 7. Проверь
+## Шаг 7. Проверь Worker до теста на iPhone
 
-1. Открой `https://ТВОЙ-ЛОГИН.github.io/pillpals/` на телефоне.
-2. Разреши уведомления при первом тапе.
-3. Добавь таблетку с временем через 2–3 минуты.
-4. **Закрой приложение полностью** (смахни из списка).
-5. Дождись времени — уведомление должно прийти из фона.
-
-### Проверка здоровья сервера
 Открой в браузере:
+```text
+https://pillpals-push-v2.<ТВОЙ-SUBDOMAIN>.workers.dev/api/health
 ```
-https://pillpals-push.ТВОЙ-СУБДОМЕН.workers.dev/api/health
+Должно вернуться:
+```json
+{"ok":true,"time":"..."}
 ```
-Должно вернуть `{"ok":true,"time":"..."}`.
 
----
+Затем:
+```text
+https://pillpals-push-v2.<ТВОЙ-SUBDOMAIN>.workers.dev/api/debug
+```
+Параметр `vapidConfigured` должен быть `true`.
+
+## Шаг 8. Проверь push на iPhone
+
+1. Открой сайт в Safari.
+2. Добавь его на главный экран через **Поделиться → На экран «Домой»**.
+3. Запусти «Пилюлькин День» именно с иконки на главном экране.
+4. Разреши уведомления.
+5. Нажми 🔔 и дождись сообщения «Уведомления включены».
+6. Нажми 🧪.
+7. В ответе Worker теперь отображается, какой HTTP-статус вернул push-сервис.
+
+Если после обновления GitHub Pages iPhone явно продолжает использовать старую версию, удали старую иконку PWA с главного экрана, добавь сайт заново и снова разреши уведомления. В проекте также повышена версия Service Worker cache до `pillpals-v33`.
 
 ## Важно про iOS
 

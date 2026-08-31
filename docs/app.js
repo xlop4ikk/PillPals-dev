@@ -504,12 +504,17 @@
       }
 
       let sub = await reg.pushManager.getSubscription();
+      const vapidKey = urlB64ToUint8Array(vapidPublic);
+
+      // Если браузер уже имеет подписку, повторно используем её.
+      // Для новой подписки обязательно передаём текущий VAPID public key.
       if (!sub) {
         sub = await reg.pushManager.subscribe({
           userVisibleOnly: true,
-          applicationServerKey: urlB64ToUint8Array(vapidPublic),
+          applicationServerKey: vapidKey,
         });
       }
+
       const save = await fetch(API + "/api/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -560,12 +565,12 @@
     try {
       const resp = await fetch(API + "/api/test-push", { method: "POST" });
       const data = await resp.json();
-      if (data.success && data.sent > 0) {
-        showToast("✅ Отправлено! Уведомление должно прийти на телефон");
-      } else if (data.error === "Нет подписок" || (data.errors && data.errors.length && !data.sent)) {
+      if (data.success && data.accepted > 0) {
+        showToast("✅ Push принят сервером Apple. Если уведомления разрешены, оно должно появиться на устройстве.");
+      } else if (data.error === "Нет подписок") {
         showToast("❌ Нет активной подписки. Нажми 🔕 и включи уведомления");
       } else {
-        showToast("❌ Ошибка отправки: " + JSON.stringify(data.errors || data.error || data));
+        showToast("❌ Ошибка отправки: " + JSON.stringify(data.results || data.error || data));
       }
     } catch (e) {
       showToast("❌ Ошибка: " + e.message);

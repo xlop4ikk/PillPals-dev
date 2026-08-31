@@ -1,21 +1,27 @@
 /**
  * Пилюлькин День — Push-сервер на Cloudflare Workers.
  *
- * Чистый Web Crypto: VAPID JWT (ES256) + шифрование payload (aes128gcm, RFC 8291).
- * Без npm-зависимостей — web-push в Workers не работает (нет node:crypto ECDH).
+ * Web Push:
+ * - VAPID / ES256 (RFC 8292)
+ * - aes128gcm payload encryption (RFC 8291 / RFC 8188)
+ * - Web Crypto API, без npm-зависимостей
  *
- * Эндпоинты:
- *   GET  /api/vapid-public-key — публичный VAPID-ключ
- *   POST /api/subscribe        — { subscription, pills?, tzOffsetMin? } — сохранить подписку
- *   POST /api/unsubscribe      — { endpoint } — удалить подписку
- *   POST /api/pills/save       — { pills, tzOffsetMin } — сохранить расписание
- *   POST /api/test-push        — тестовое уведомление всем подписанным
- *   GET  /api/debug            — состояние
+ * Endpoints:
+ *   GET  /api/health
+ *   GET  /api/vapid-public-key
+ *   POST /api/subscribe
+ *   POST /api/unsubscribe
+ *   POST /api/pills/save
+ *   POST /api/test-push
+ *   GET  /api/debug
  *
- * Cron: каждую минуту проверяет расписание и рассылает push.
+ * Cron: каждую минуту проверяет расписание и отправляет push.
  *
- * Переменные (worker/wrangler.toml → [vars]):
- *   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT, SITE_URL
+ * Environment:
+ *   VAPID_PUBLIC_KEY — обычная [vars]
+ *   VAPID_PRIVATE_KEY — Cloudflare Secret (wrangler secret put VAPID_PRIVATE_KEY)
+ *   VAPID_SUBJECT — [vars], например mailto:you@example.com
+ *   SITE_URL — [vars]
  */
 
 const CORS = {
@@ -23,6 +29,12 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
+
+const WEB_PUSH_MAX_BODY = 4096;
+const AES128GCM_RS = 4096;
+const AES128GCM_TAG_LENGTH = 16;
+const AES128GCM_HEADER_LENGTH = 16 + 4 + 1 + 65; // salt + rs + idlen + keyid
+const MAX_PLAINTEXT = WEB_PUSH_MAX_BODY - AES128GCM_HEADER_LENGTH - 1 - AES128GCM_TAG_LENGTH;
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), {
@@ -33,14 +45,14 @@ function json(obj, status = 200) {
 
 // ===== Base64url helpers =====
 function b64urlEncode(bytes) {
-  let bin = "";
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let bin = "";
   for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function b64urlDecode(str) {
-  let s = str.replace(/-/g, "+").replace(/_/g, "/");
+  let s = String(str).replace(/-/g, "+").replace(/_/g, "/");
   while (s.length % 4) s += "=";
   const bin = atob(s);
   const bytes = new Uint8Array(bin.length);
@@ -55,32 +67,63 @@ function utf8(str) {
 function concatBytes(...arrays) {
   const total = arrays.reduce((n, a) => n + a.length, 0);
   const out = new Uint8Array(total);
-  let off = 0;
-  for (const a of arrays) { out.set(a, off); off += a.length; }
+  let offset = 0;
+  for (const arr of arrays) {
+    out.set(arr, offset);
+    offset += arr.length;
+  }
   return out;
 }
 
 function u32be(n) {
-  return new Uint8Array([(n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+  return new Uint8Array([
+    (n >>> 24) & 0xff,
+    (n >>> 16) & 0xff,
+    (n >>> 8) & 0xff,
+    n & 0xff,
+  ]);
+}
+
+function assertLength(bytes, expected, name) {
+  if (bytes.length !== expected) {
+    throw new Error(`${name} must be ${expected} bytes, got ${bytes.length}`);
+  }
 }
 
 // ===== HKDF =====
 async function hkdf(ikm, salt, info, length) {
-  const key = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  const key = await crypto.subtle.importKey(
+    "raw",
+    ikm,
+    "HKDF",
+    false,
+    ["deriveBits"]
+  );
+
   const bits = await crypto.subtle.deriveBits(
-    { name: "HKDF", hash: "SHA-256", salt, info },
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt,
+      info,
+    },
     key,
     length * 8
   );
+
   return new Uint8Array(bits);
 }
 
 // ===== VAPID JWT (ES256) =====
 async function vapidAuthHeader(endpoint, publicKeyB64, privateKeyB64, subject) {
-  const aud = new URL(endpoint).origin;
+  if (!publicKeyB64 || !privateKeyB64) {
+    throw new Error("VAPID keys are not configured");
+  }
 
-  // Приватный ключ из base64url → JWK
-  const pubBytes = b64urlDecode(publicKeyB64); // 65 байт: 0x04 || X || Y
+  const aud = new URL(endpoint).origin;
+  const pubBytes = b64urlDecode(publicKeyB64);
+  assertLength(pubBytes, 65, "VAPID public key");
+
   const jwk = {
     kty: "EC",
     crv: "P-256",
@@ -89,82 +132,159 @@ async function vapidAuthHeader(endpoint, publicKeyB64, privateKeyB64, subject) {
     d: privateKeyB64,
     ext: true,
   };
+
   const key = await crypto.subtle.importKey(
-    "jwk", jwk,
+    "jwk",
+    jwk,
     { name: "ECDSA", namedCurve: "P-256" },
-    false, ["sign"]
+    false,
+    ["sign"]
   );
 
-  const enc = (o) => b64urlEncode(utf8(JSON.stringify(o)));
-  const unsigned = enc({ typ: "JWT", alg: "ES256" }) + "." +
-    enc({ aud, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: subject });
+  const enc = (obj) => b64urlEncode(utf8(JSON.stringify(obj)));
+  const header = enc({ typ: "JWT", alg: "ES256" });
+  const payload = enc({
+    aud,
+    exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+    sub: subject || "mailto:admin@example.com",
+  });
+  const unsigned = `${header}.${payload}`;
 
-  const sigBuf = await crypto.subtle.sign(
+  const signature = await crypto.subtle.sign(
     { name: "ECDSA", hash: "SHA-256" },
     key,
     utf8(unsigned)
   );
-  // Подпись ES256 в JWT — raw r||s, тот же формат, что отдаёт Web Crypto
-  return `vapid t=${unsigned}.${b64urlEncode(new Uint8Array(sigBuf))}, k=${publicKeyB64}`;
+  const sig = new Uint8Array(signature);
+  assertLength(sig, 64, "VAPID ES256 signature");
+
+  return `vapid t=${unsigned}.${b64urlEncode(sig)}, k=${publicKeyB64}`;
 }
 
-// ===== Шифрование payload (aes128gcm, RFC 8291) =====
-async function encryptPayload(payloadStr, sub) {
-  if (!sub.keys || !sub.keys.p256dh || !sub.keys.auth) {
-    throw new Error("subscription missing keys");
+// ===== Web Push payload encryption (RFC 8291 / RFC 8188 aes128gcm) =====
+async function encryptPayload(payloadStr, subscription) {
+  if (!subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+    throw new Error("subscription missing p256dh/auth keys");
   }
-  const uaPublicRaw = b64urlDecode(sub.keys.p256dh);
-  const authSecret = b64urlDecode(sub.keys.auth);
 
-  // Эфемерная пара ключей сервера
-  const eph = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
-  const ephPublicRaw = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const uaPublicRaw = b64urlDecode(subscription.keys.p256dh);
+  const authSecret = b64urlDecode(subscription.keys.auth);
+  assertLength(uaPublicRaw, 65, "subscription p256dh");
+  assertLength(authSecret, 16, "subscription auth secret");
+  if (uaPublicRaw[0] !== 0x04) {
+    throw new Error("subscription p256dh is not an uncompressed P-256 point");
+  }
 
-  // Общий секрет ECDH
-  const uaPublic = await crypto.subtle.importKey(
-    "raw", uaPublicRaw, { name: "ECDH", namedCurve: "P-256" }, false, []
-  );
-  const ecdhSecret = new Uint8Array(
-    await crypto.subtle.deriveBits({ name: "ECDH", public: uaPublic }, eph.privateKey, 256)
-  );
-
-  // IKM
-  const ikm = await hkdf(
-    authSecret, ecdhSecret,
-    concatBytes(utf8("WebPush: info"), new Uint8Array([0]), uaPublicRaw, ephPublicRaw),
-    32
-  );
-
-  // Соль = эфемерный публичный ключ
-  const cek = await hkdf(ikm, ephPublicRaw, utf8("Content-Encoding: aes128gcm\u0000"), 16);
-  const nonce = await hkdf(ikm, ephPublicRaw, utf8("Content-Encoding: nonce\u0000"), 12);
-
-  // Запись: payload || 0x02 || нулевой паддинг (всего rs - 17)
-  // rs=4026: 70 байт заголовка aes128gcm + 4026 = 4096 — лимит Apple Push (413 иначе)
-  const rs = 4026;
   const payloadBytes = utf8(payloadStr);
-  const paddingLen = rs - 17 - payloadBytes.length;
-  if (paddingLen < 0) throw new Error("payload too large");
-  const record = concatBytes(payloadBytes, new Uint8Array([2]), new Uint8Array(paddingLen));
+  if (payloadBytes.length > MAX_PLAINTEXT) {
+    throw new Error(`payload too large: ${payloadBytes.length} > ${MAX_PLAINTEXT} bytes`);
+  }
 
-  const aesKey = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, record)
+  // Application server generates a fresh ephemeral ECDH key pair per message.
+  const eph = await crypto.subtle.generateKey(
+    { name: "ECDH", namedCurve: "P-256" },
+    true,
+    ["deriveBits"]
   );
 
-  // Заголовок aes128gcm: salt(65) || rs(4 BE) || idlen(1) = 0
-  const body = concatBytes(ephPublicRaw, u32be(rs), new Uint8Array([0]), ciphertext);
+  const ephPublicRaw = new Uint8Array(
+    await crypto.subtle.exportKey("raw", eph.publicKey)
+  );
+  assertLength(ephPublicRaw, 65, "ephemeral public key");
+
+  // ECDH shared secret: ECDH(as_private, ua_public)
+  const uaPublic = await crypto.subtle.importKey(
+    "raw",
+    uaPublicRaw,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    []
+  );
+
+  const ecdhSecret = new Uint8Array(
+    await crypto.subtle.deriveBits(
+      { name: "ECDH", public: uaPublic },
+      eph.privateKey,
+      256
+    )
+  );
+
+  // RFC 8291 §3.3:
+  // PRK_key = HKDF-Extract(auth_secret, ecdh_secret)
+  // IKM    = HKDF-Expand(PRK_key, "WebPush: info\0" || ua_public || as_public, 32)
+  const keyInfo = concatBytes(
+    utf8("WebPush: info"),
+    new Uint8Array([0]),
+    uaPublicRaw,
+    ephPublicRaw
+  );
+  const ikm = await hkdf(ecdhSecret, authSecret, keyInfo, 32);
+
+  // RFC 8188 / RFC 8291:
+  // salt = random 16 bytes for this encrypted message.
+  // PRK = HKDF-Extract(salt, IKM)
+  // CEK = HKDF-Expand(PRK, "Content-Encoding: aes128gcm\0", 16)
+  // NONCE = HKDF-Expand(PRK, "Content-Encoding: nonce\0", 12)
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(
+    ikm,
+    salt,
+    utf8("Content-Encoding: aes128gcm\u0000"),
+    16
+  );
+  const nonce = await hkdf(
+    ikm,
+    salt,
+    utf8("Content-Encoding: nonce\u0000"),
+    12
+  );
+
+  // One record only. The final record is payload || 0x02 || zero padding.
+  // Padding is kept at zero bytes because Apple/Web Push caps the body at 4096 bytes.
+  const record = concatBytes(payloadBytes, new Uint8Array([0x02]));
+
+  const aesKey = await crypto.subtle.importKey(
+    "raw",
+    cek,
+    "AES-GCM",
+    false,
+    ["encrypt"]
+  );
+
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, tagLength: 128 },
+      aesKey,
+      record
+    )
+  );
+
+  // aes128gcm binary header (RFC 8188):
+  //   salt (16) || rs (4) || idlen (1) || keyid (65)
+  // Here keyid is the uncompressed application-server ECDH public key.
+  const header = concatBytes(
+    salt,
+    u32be(AES128GCM_RS),
+    new Uint8Array([ephPublicRaw.length]),
+    ephPublicRaw
+  );
+
+  const body = concatBytes(header, ciphertext);
+  if (body.length > WEB_PUSH_MAX_BODY) {
+    throw new Error(`encrypted body too large: ${body.length} bytes`);
+  }
+
   return body;
 }
 
-// ===== Отправка push =====
+// ===== Push send =====
 async function sendPush(subscription, env, payload) {
   try {
     const auth = await vapidAuthHeader(
       subscription.endpoint,
       env.VAPID_PUBLIC_KEY,
       env.VAPID_PRIVATE_KEY,
-      env.VAPID_SUBJECT || "mailto:admin@example.com"
+      env.VAPID_SUBJECT
     );
 
     const headers = {
@@ -173,21 +293,41 @@ async function sendPush(subscription, env, payload) {
       Authorization: auth,
     };
 
-    let body;
-    if (payload) {
+    let body = undefined;
+    if (payload !== undefined && payload !== null) {
       body = await encryptPayload(JSON.stringify(payload), subscription);
       headers["Content-Type"] = "application/octet-stream";
       headers["Content-Encoding"] = "aes128gcm";
     }
 
-    const resp = await fetch(subscription.endpoint, { method: "POST", headers, body });
-    return { ok: resp.status === 201 || resp.status === 200, status: resp.status };
+    const response = await fetch(subscription.endpoint, {
+      method: "POST",
+      headers,
+      body,
+    });
+
+    let responseBody = "";
+    try {
+      responseBody = await response.text();
+    } catch (_) {
+      // Some push services provide no response body.
+    }
+
+    return {
+      ok: response.status === 201 || response.status === 200 || response.status === 202,
+      status: response.status,
+      responseBody: responseBody.slice(0, 500),
+    };
   } catch (e) {
-    return { ok: false, status: 0, error: String(e.message || e) };
+    return {
+      ok: false,
+      status: 0,
+      error: String(e?.message || e),
+    };
   }
 }
 
-// ===== KV: подписки (массив в одном ключе) =====
+// ===== KV: subscriptions =====
 async function getSubscriptions(env) {
   const store = await env.KV_NAMESPACE.get("subscriptions", "json");
   return (store && store.subscriptions) || [];
@@ -197,7 +337,7 @@ async function saveSubscriptions(env, subs) {
   await env.KV_NAMESPACE.put("subscriptions", JSON.stringify({ subscriptions: subs }));
 }
 
-// ===== KV: расписание =====
+// ===== KV: schedule =====
 async function getSchedule(env) {
   const rec = await env.KV_NAMESPACE.get("user:pills", "json");
   return rec || { pills: [], tzOffsetMin: 0, notifiedToday: {} };
@@ -207,90 +347,124 @@ async function saveSchedule(env, rec) {
   await env.KV_NAMESPACE.put("user:pills", JSON.stringify(rec));
 }
 
-// ===== HTTP-обработчик =====
+// ===== HTTP =====
 async function handleRequest(request, env) {
   const url = new URL(request.url);
   const method = request.method;
 
-  if (url.pathname === "/api/health") {
+  if (url.pathname === "/api/health" && method === "GET") {
     return json({ ok: true, time: new Date().toISOString() });
   }
 
-  // Публичный VAPID-ключ для подписки
   if (url.pathname === "/api/vapid-public-key" && method === "GET") {
+    if (!env.VAPID_PUBLIC_KEY) return json({ error: "VAPID public key is not configured" }, 500);
     return new Response(env.VAPID_PUBLIC_KEY, {
       headers: { ...CORS, "Content-Type": "text/plain" },
     });
   }
 
-  // Сохранение подписки (+ сразу расписание, если прислано)
   if (url.pathname === "/api/subscribe" && method === "POST") {
     const data = await request.json();
-    if (!data.subscription || !data.subscription.endpoint) {
+    if (!data?.subscription?.endpoint) {
       return json({ success: false, error: "missing subscription" }, 400);
     }
 
     const subs = await getSubscriptions(env);
-    const rec = { subscription: data.subscription, tzOffsetMin: data.tzOffsetMin || 0, addedAt: Date.now() };
-    const idx = subs.findIndex(s => s.subscription.endpoint === data.subscription.endpoint);
-    if (idx !== -1) subs[idx] = rec; else subs.push(rec);
+    const rec = {
+      subscription: data.subscription,
+      tzOffsetMin: Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0,
+      addedAt: Date.now(),
+    };
+    const idx = subs.findIndex((s) => s.subscription?.endpoint === data.subscription.endpoint);
+    if (idx !== -1) subs[idx] = rec;
+    else subs.push(rec);
     await saveSubscriptions(env, subs);
 
-    // Если прислан schedule — сохраняем
     if (Array.isArray(data.pills)) {
       const sched = await getSchedule(env);
       sched.pills = data.pills;
-      sched.tzOffsetMin = data.tzOffsetMin || 0;
+      sched.tzOffsetMin = Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0;
       await saveSchedule(env, sched);
     }
 
-    return json({ success: true });
+    return json({ success: true, subscriptions: subs.length });
   }
 
-  // Удаление подписки
   if (url.pathname === "/api/unsubscribe" && method === "POST") {
     const data = await request.json();
-    if (!data.endpoint) return json({ success: false, error: "missing endpoint" }, 400);
+    if (!data?.endpoint) return json({ success: false, error: "missing endpoint" }, 400);
     const subs = await getSubscriptions(env);
-    await saveSubscriptions(env, subs.filter(s => s.subscription.endpoint !== data.endpoint));
+    await saveSubscriptions(env, subs.filter((s) => s.subscription?.endpoint !== data.endpoint));
     return json({ success: true });
   }
 
-  // Сохранение расписания
   if (url.pathname === "/api/pills/save" && method === "POST") {
     const data = await request.json();
     const sched = await getSchedule(env);
-    sched.pills = data.pills || [];
-    sched.tzOffsetMin = data.tzOffsetMin || 0;
+    sched.pills = Array.isArray(data.pills) ? data.pills : [];
+    sched.tzOffsetMin = Number.isFinite(data.tzOffsetMin) ? data.tzOffsetMin : 0;
     await saveSchedule(env, sched);
     return json({ success: true, saved: sched.pills.length });
   }
 
-  // Тестовый push всем подписанным (кнопка 🧪 в приложении)
   if (url.pathname === "/api/test-push" && method === "POST") {
     const subs = await getSubscriptions(env);
     if (subs.length === 0) return json({ success: false, error: "Нет подписок" });
+
     const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
     const minimal = url.searchParams.get("minimal") === "1";
-    let sent = 0;
-    const errors = [];
+    let accepted = 0;
+    const results = [];
+
     for (const rec of subs) {
       const payload = minimal
-        ? { title: "💊 Минимальный тест", body: "Голый payload без иконки и полей" }
+        ? {
+            title: "💊 Минимальный тест",
+            body: "Проверка Web Push без дополнительных полей",
+          }
         : {
             title: "💊 Тест Пилюлькина",
-            body: "Полный payload с иконкой " + new Date().toISOString().slice(11, 19),
+            body: "Apple Push Service принял это сообщение — уведомление должно появиться на устройстве",
             icon: siteUrl + "/icons/PillPalls_icon-192.png",
             url: siteUrl || "/",
           };
+
       const result = await sendPush(rec.subscription, env, payload);
-      if (result.ok) sent++;
-      else errors.push(result);
+      results.push({
+        endpoint: String(rec.subscription?.endpoint || "").slice(0, 80),
+        status: result.status,
+        ok: result.ok,
+        error: result.error,
+        responseBody: result.responseBody,
+      });
+      if (result.ok) accepted++;
     }
-    return json({ success: sent > 0, sent, errors });
+
+    // HTTP 404/410 means the subscription is no longer valid.
+    const invalidEndpoints = results
+      .filter((r) => r.status === 404 || r.status === 410)
+      .map((r) => r.endpoint);
+
+    if (invalidEndpoints.length) {
+      const invalidFull = new Set(
+        subs
+          .filter((s) => invalidEndpoints.includes(String(s.subscription?.endpoint || "").slice(0, 80)))
+          .map((s) => s.subscription.endpoint)
+      );
+      await saveSubscriptions(
+        env,
+        subs.filter((s) => !invalidFull.has(s.subscription?.endpoint))
+      );
+    }
+
+    return json({
+      success: accepted > 0,
+      accepted,
+      total: subs.length,
+      results,
+    });
   }
 
-  // Debug
   if (url.pathname === "/api/debug" && method === "GET") {
     const subs = await getSubscriptions(env);
     const sched = await getSchedule(env);
@@ -300,13 +474,18 @@ async function handleRequest(request, env) {
       subscriptions: subs.length,
       pillsSaved: (sched.pills || []).length,
       tzOffsetMin: sched.tzOffsetMin,
+      limits: {
+        maxPushBody: WEB_PUSH_MAX_BODY,
+        maxPlaintext: MAX_PLAINTEXT,
+        aes128gcmHeader: AES128GCM_HEADER_LENGTH,
+      },
     });
   }
 
   return json({ error: "not found" }, 404);
 }
 
-// ===== Cron: напоминания =====
+// ===== Cron =====
 async function checkReminders(env) {
   try {
     if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) {
@@ -321,30 +500,34 @@ async function checkReminders(env) {
     const pills = sched.pills || [];
     if (pills.length === 0) return;
 
-    // Локальное время пользователя (tzOffsetMin = getTimezoneOffset(), минуты)
-    const offset = sched.tzOffsetMin || 0;
+    const offset = Number.isFinite(sched.tzOffsetMin) ? sched.tzOffsetMin : 0;
     const userNow = new Date(Date.now() - offset * 60000);
-    const todayKey = userNow.getFullYear() + "-" +
-      String(userNow.getMonth() + 1).padStart(2, "0") + "-" +
+    const todayKey =
+      userNow.getFullYear() +
+      "-" +
+      String(userNow.getMonth() + 1).padStart(2, "0") +
+      "-" +
       String(userNow.getDate()).padStart(2, "0");
-    const userHHMM = String(userNow.getHours()).padStart(2, "0") + ":" +
+    const userHHMM =
+      String(userNow.getHours()).padStart(2, "0") +
+      ":" +
       String(userNow.getMinutes()).padStart(2, "0");
 
     sched.notifiedToday = sched.notifiedToday || {};
 
-    // Какие таблетки пора принять
     const due = [];
     const dueKeys = [];
     for (const pill of pills) {
       if (!pill.time) continue;
       if (pill.dateStart && todayKey < pill.dateStart) continue;
       if (pill.dateEnd && todayKey > pill.dateEnd) continue;
-      if (pill.takenDates && pill.takenDates[todayKey]) continue; // уже принята
+      if (pill.takenDates?.[todayKey]) continue;
       if (pill.time > userHHMM) continue;
-      const nk = pill.id + ":" + todayKey;
-      if (sched.notifiedToday[nk]) continue; // уже уведомляли
-      due.push((pill.name || "Лекарство") + (pill.dose ? " (" + pill.dose + ")" : ""));
-      dueKeys.push(nk);
+
+      const key = `${pill.id}:${todayKey}`;
+      if (sched.notifiedToday[key]) continue;
+      due.push((pill.name || "Лекарство") + (pill.dose ? ` (${pill.dose})` : ""));
+      dueKeys.push(key);
     }
 
     if (due.length === 0) return;
@@ -352,33 +535,46 @@ async function checkReminders(env) {
     const siteUrl = (env.SITE_URL || "").replace(/\/+$/, "");
     const payload = {
       title: "💊 Время принять таблетки!",
-      body: "Пора принять:\n" + due.map(n => "💊 " + n).join("\n"),
+      body: "Пора принять:\n" + due.map((name) => "💊 " + name).join("\n"),
       icon: siteUrl + "/icons/PillPalls_icon-192.png",
       url: siteUrl || "/",
     };
 
-    let sent = 0;
-    const removed = [];
+    let accepted = 0;
+    const invalidEndpoints = new Set();
+
     for (const rec of subs) {
       const result = await sendPush(rec.subscription, env, payload);
-      if (result.ok) sent++;
-      else if (result.status === 404 || result.status === 410) removed.push(rec.subscription.endpoint);
-      else console.log("Push failed:", JSON.stringify(result), "endpoint:", rec.subscription.endpoint.slice(0, 60));
+      if (result.ok) accepted++;
+      else if (result.status === 404 || result.status === 410) {
+        invalidEndpoints.add(rec.subscription.endpoint);
+      } else {
+        console.log(
+          "Push failed:",
+          JSON.stringify(result),
+          "endpoint:",
+          String(rec.subscription.endpoint || "").slice(0, 80)
+        );
+      }
     }
-    console.log(`Push: due=${due.length} sent=${sent} removed=${removed.length}`);
 
-    if (removed.length) {
-      await saveSubscriptions(env, subs.filter(s => !removed.includes(s.subscription.endpoint)));
+    console.log(`Push: due=${due.length} accepted=${accepted} removed=${invalidEndpoints.size}`);
+
+    if (invalidEndpoints.size) {
+      await saveSubscriptions(
+        env,
+        subs.filter((s) => !invalidEndpoints.has(s.subscription?.endpoint))
+      );
     }
 
-    // Помечаем уведомлёнными (защита от повторной отправки)
-    if (sent > 0) {
-      for (const nk of dueKeys) sched.notifiedToday[nk] = Date.now();
+    // Mark as notified only when at least one push service accepted the message.
+    if (accepted > 0) {
+      for (const key of dueKeys) sched.notifiedToday[key] = Date.now();
     }
-    // Чистим старые флаги (оставляем только сегодня)
+
     const cleaned = {};
-    for (const k in sched.notifiedToday) {
-      if (k.endsWith(":" + todayKey)) cleaned[k] = sched.notifiedToday[k];
+    for (const key in sched.notifiedToday) {
+      if (key.endsWith(`:${todayKey}`)) cleaned[key] = sched.notifiedToday[key];
     }
     sched.notifiedToday = cleaned;
     await saveSchedule(env, sched);
@@ -387,18 +583,20 @@ async function checkReminders(env) {
   }
 }
 
-// ===== Точка входа =====
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS });
     }
+
     try {
       return await handleRequest(request, env);
     } catch (e) {
-      return json({ error: String(e.message || e) }, 500);
+      console.error("Request error:", e);
+      return json({ error: String(e?.message || e) }, 500);
     }
   },
+
   async scheduled(event, env, ctx) {
     ctx.waitUntil(checkReminders(env));
   },

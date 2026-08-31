@@ -1,0 +1,2 @@
+# Local development only. Never commit a real value.
+VAPID_PRIVATE_KEY="YOUR_VAPID_PRIVATE_KEY"

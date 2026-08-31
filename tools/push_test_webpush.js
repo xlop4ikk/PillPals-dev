@@ -1,37 +1,52 @@
 /**
- * Differential test: send a push via the battle-tested `web-push` library
- * using the SAME subscription and keys as the Worker.
- * If THIS arrives but the Worker's doesn't -> Worker's manual encryption is buggy.
+ * Differential Web Push test using the battle-tested `web-push` package.
  *
- * Run:  node tools/push_test_webpush.js
+ * This script intentionally contains NO private VAPID key and NO real device
+ * subscription. Provide them at runtime via environment variables:
+ *
+ *   VAPID_PUBLIC_KEY=... \
+ *   VAPID_PRIVATE_KEY=... \
+ *   VAPID_SUBJECT=mailto:you@example.com \
+ *   PUSH_SUBSCRIPTION_JSON='{"endpoint":"...","keys":{"p256dh":"...","auth":"..."}}' \
+ *   node tools/push_test_webpush.js
  */
+
 const webpush = require("web-push");
 
-// Keys from worker/wrangler.toml
-const PUBLIC_KEY = "BIrwu0FfzyM3JciixxmUGZTh5-OlaX7YQb-q4yfBaLk6cwyKGIhdMsef9KvMBsfUMq9y0p85mJgsvah58nybERo";
-const PRIVATE_KEY = "_XMyH9X8UnkIJSGCA0RkAfmztn8QZUU0qPSX8IHVFuo";
-const SUBJECT = "mailto:xatabeach42@gmail.com";
+function required(name) {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing environment variable: ${name}`);
+  return value;
+}
 
-// Latest subscription from KV (updated 31.08.2026)
-const subscription = {
-  endpoint: "https://web.push.apple.com/QED_5Z-sKFEy3PrJi6mtYk4fbUSLzdJM3U_HBlrYIuhoAkJKYCqgIN2rXBGqC8rvFzylw52LUBo97IZX9ytupEgPqmvOoqmqICMhDVcU_ZuQp-_UJmrAK2fFhsh8fx4a312UVu1lKvnX_YGrieYcL3RjshqlZMOka6GP6XqfOgc",
-  keys: {
-    p256dh: "BDm4a9cGvV5wsITMsCcxcCRWoCIUK28y38WTkQmi7Fygk_KSSJjp1kdaB5YcjpxoPWEchihXKwdu4xrP1nN_eTc",
-    auth: "uRACwKHHwiI6edGN7T8IjA",
-  },
-};
+const publicKey = required("VAPID_PUBLIC_KEY");
+const privateKey = required("VAPID_PRIVATE_KEY");
+const subject = process.env.VAPID_SUBJECT || "mailto:admin@example.com";
 
-webpush.setVapidDetails(SUBJECT, PUBLIC_KEY, PRIVATE_KEY);
+let subscription;
+try {
+  subscription = JSON.parse(required("PUSH_SUBSCRIPTION_JSON"));
+} catch (error) {
+  throw new Error(`PUSH_SUBSCRIPTION_JSON is not valid JSON: ${error.message}`);
+}
+
+if (!subscription?.endpoint || !subscription?.keys?.p256dh || !subscription?.keys?.auth) {
+  throw new Error("Subscription must contain endpoint, keys.p256dh and keys.auth");
+}
+
+webpush.setVapidDetails(subject, publicKey, privateKey);
 
 const payload = JSON.stringify({
   title: "💊 Тест через web-push",
   body: "Если видишь это — эталонная библиотека работает",
 });
 
-webpush.sendNotification(subscription, payload)
+webpush
+  .sendNotification(subscription, payload)
   .then((res) => {
-    console.log("OK, statusCode:", res.statusCode);
+    console.log("Accepted by push service, statusCode:", res.statusCode);
   })
   .catch((err) => {
-    console.error("FAILED:", err.statusCode, err.body || err.message);
+    console.error("Push failed:", err.statusCode, err.body || err.message);
+    process.exitCode = 1;
   });
