@@ -115,6 +115,44 @@ async function hkdf(ikm, salt, info, length) {
 }
 
 // ===== VAPID JWT (ES256) =====
+// Приватный ключ принимается в ЛЮБОМ из двух форматов:
+//   а) полная JWK JSON-строка {"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."}
+//      (именно её выводит tools/gen_vapid.js)
+//   б) base64url-строка "d" (43 символа) — тогда x/y берутся из публичного ключа
+function parsePrivateJwk(publicKeyB64, privateKeyRaw) {
+  const raw = String(privateKeyRaw || "").trim();
+
+  if (raw.startsWith("{")) {
+    const parsed = JSON.parse(raw);
+    if (!parsed.d || !parsed.x || !parsed.y) {
+      throw new Error("VAPID_PRIVATE_KEY JWK must contain x, y and d fields");
+    }
+    // Оставляем только нужные поля: key_ops/use из Node-экспорта ломают importKey
+    return {
+      kty: "EC",
+      crv: "P-256",
+      x: String(parsed.x),
+      y: String(parsed.y),
+      d: String(parsed.d),
+      ext: true,
+    };
+  }
+
+  const pubBytes = b64urlDecode(publicKeyB64);
+  assertLength(pubBytes, 65, "VAPID public key");
+  if (pubBytes[0] !== 0x04) {
+    throw new Error("VAPID public key is not an uncompressed P-256 point");
+  }
+  return {
+    kty: "EC",
+    crv: "P-256",
+    x: b64urlEncode(pubBytes.slice(1, 33)),
+    y: b64urlEncode(pubBytes.slice(33, 65)),
+    d: raw,
+    ext: true,
+  };
+}
+
 async function vapidAuthHeader(endpoint, publicKeyB64, privateKeyB64, subject) {
   if (!publicKeyB64 || !privateKeyB64) {
     throw new Error("VAPID keys are not configured");
@@ -124,14 +162,7 @@ async function vapidAuthHeader(endpoint, publicKeyB64, privateKeyB64, subject) {
   const pubBytes = b64urlDecode(publicKeyB64);
   assertLength(pubBytes, 65, "VAPID public key");
 
-  const jwk = {
-    kty: "EC",
-    crv: "P-256",
-    x: b64urlEncode(pubBytes.slice(1, 33)),
-    y: b64urlEncode(pubBytes.slice(33, 65)),
-    d: privateKeyB64,
-    ext: true,
-  };
+  const jwk = parsePrivateJwk(publicKeyB64, privateKeyB64);
 
   const key = await crypto.subtle.importKey(
     "jwk",
@@ -471,6 +502,9 @@ async function handleRequest(request, env) {
     return json({
       ok: true,
       vapidConfigured: !!env.VAPID_PUBLIC_KEY && !!env.VAPID_PRIVATE_KEY,
+      privateKeyFormat: String(env.VAPID_PRIVATE_KEY || "").trim().startsWith("{")
+        ? "jwk-json"
+        : "base64url-d",
       subscriptions: subs.length,
       pillsSaved: (sched.pills || []).length,
       tzOffsetMin: sched.tzOffsetMin,
