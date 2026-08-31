@@ -114,13 +114,15 @@ async function hkdf(ikm, salt, info, length) {
   return new Uint8Array(bits);
 }
 
-// ===== VAPID JWT (ES256) =====
+// ===== Парсинг приватного ключа: поддержка JWK JSON и base64url "d" =====
 // Приватный ключ принимается в ЛЮБОМ из двух форматов:
 //   а) полная JWK JSON-строка {"kty":"EC","crv":"P-256","x":"...","y":"...","d":"..."}
 //      (именно её выводит tools/gen_vapid.js)
 //   б) base64url-строка "d" (43 символа) — тогда x/y берутся из публичного ключа
 function parsePrivateJwk(publicKeyB64, privateKeyRaw) {
-  const raw = String(privateKeyRaw || "").trim();
+  const raw = String(privateKeyRaw || "").trim()
+    // если секрет сохранился вместе с внешними кавычками — снимаем их
+    .replace(/^["']|["']$/g, "");
 
   if (raw.startsWith("{")) {
     const parsed = JSON.parse(raw);
@@ -138,11 +140,19 @@ function parsePrivateJwk(publicKeyB64, privateKeyRaw) {
     };
   }
 
+  if (raw.startsWith("-----BEGIN")) {
+    throw new Error("VAPID_PRIVATE_KEY looks like PEM — не поддерживается. Нужен JWK JSON или base64url 'd' (см. tools/gen_vapid.js)");
+  }
+
   const pubBytes = b64urlDecode(publicKeyB64);
   assertLength(pubBytes, 65, "VAPID public key");
   if (pubBytes[0] !== 0x04) {
     throw new Error("VAPID public key is not an uncompressed P-256 point");
   }
+
+  const dBytes = b64urlDecode(raw);
+  assertLength(dBytes, 32, "VAPID private key 'd'");
+
   return {
     kty: "EC",
     crv: "P-256",
@@ -151,6 +161,34 @@ function parsePrivateJwk(publicKeyB64, privateKeyRaw) {
     d: raw,
     ext: true,
   };
+}
+
+// ===== Самодиагностика VAPID-ключей (для /api/debug, ключ не раскрываем) =====
+async function vapidSelfTest(env) {
+  const raw = String(env.VAPID_PRIVATE_KEY || "").trim();
+  const info = {
+    format: raw.startsWith("{") ? "jwk-json"
+      : raw.startsWith("-----BEGIN") ? "pem"
+      : "raw-string",
+    length: raw.length,
+    firstChars: raw.slice(0, 5),
+    dBytes: null,
+    importOk: false,
+    error: null,
+  };
+  try {
+    const jwk = parsePrivateJwk(env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY);
+    info.dBytes = b64urlDecode(jwk.d).length;
+    const key = await crypto.subtle.importKey(
+      "jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]
+    );
+    // Пробная подпись — полная проверка ключа
+    await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, utf8("selftest"));
+    info.importOk = true;
+  } catch (e) {
+    info.error = String(e?.message || e);
+  }
+  return info;
 }
 
 async function vapidAuthHeader(endpoint, publicKeyB64, privateKeyB64, subject) {
@@ -505,6 +543,7 @@ async function handleRequest(request, env) {
       privateKeyFormat: String(env.VAPID_PRIVATE_KEY || "").trim().startsWith("{")
         ? "jwk-json"
         : "base64url-d",
+      vapidSelfTest: await vapidSelfTest(env),
       subscriptions: subs.length,
       pillsSaved: (sched.pills || []).length,
       tzOffsetMin: sched.tzOffsetMin,
